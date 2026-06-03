@@ -1,94 +1,185 @@
-import { useState } from "react";
-import Navbar from "./components/Navbar";
-import InputBox from "./components/InputBox";
+import { useMemo, useState } from "react";
+import Navbar from "./components/navbar";
+import InputBox from "./components/inputbox";
+import ResultPanel from "./components/ResultPanel";
+import {
+  SAMPLE_MESSAGES,
+  analyzeMessageLocally,
+  buildAiPrompt,
+  mergeAnalyses,
+  parseAiAnalysis,
+} from "./lib/scamAnalysis";
 
 function App() {
-  // 🔑 Get API key from .env
-  const apiKey = import.meta.env.VITE_API_KEY;
-
-  // 🧠 State
+  const envApiKey = import.meta.env.VITE_API_KEY || "";
   const [inputText, setInputText] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
+  const [runtimeApiKey, setRuntimeApiKey] = useState(
+    () => sessionStorage.getItem("scamguard_api_key") || "",
+  );
+  const [aiEnabled, setAiEnabled] = useState(Boolean(envApiKey || runtimeApiKey));
+  const [copied, setCopied] = useState(false);
 
-  // 🚀 Main function (AI call)
+  const activeApiKey = useMemo(
+    () => runtimeApiKey.trim() || envApiKey.trim(),
+    [envApiKey, runtimeApiKey],
+  );
+
   const analyzeText = async () => {
-    if (!inputText.trim()) return;
+    const message = inputText.trim();
+    if (!message) return;
 
-    if (!apiKey) {
-      setError("API Key not found. Check your .env file.");
+    const localAnalysis = analyzeMessageLocally(message);
+    setResult(localAnalysis);
+    setError("");
+    setCopied(false);
+
+    if (!aiEnabled) {
+      return;
+    }
+
+    if (!activeApiKey) {
+      setError("Local analysis completed. Add a Gemini API key to enable AI-assisted analysis.");
+      setShowSettings(true);
       return;
     }
 
     setIsAnalyzing(true);
-    setResult(null);
-    setError("");
-
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-
-    const payload = {
-      contents: [
-        {
-          parts: [{ text: inputText }]
-        }
-      ]
-    };
 
     try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${activeApiKey}`;
+      const payload = {
+        contents: [
+          {
+            parts: [{ text: buildAiPrompt(message, localAnalysis) }],
+          },
+        ],
+        generationConfig: {
+          responseMimeType: "application/json",
+          temperature: 0.2,
+        },
+      };
+
       const res = await fetch(url, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       });
 
+      if (!res.ok) {
+        throw new Error(`Gemini request failed with status ${res.status}`);
+      }
+
       const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      const aiAnalysis = parseAiAnalysis(text);
 
-      // 🧪 Debug (you can remove later)
-      console.log(data);
+      if (!aiAnalysis) {
+        setError("Local analysis completed. The AI response was not in the expected format.");
+        return;
+      }
 
-      const text =
-        data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-      setResult(text || "No response from AI");
+      setResult(mergeAnalyses(localAnalysis, aiAnalysis));
     } catch (err) {
       console.error(err);
-      setError("Something went wrong while analyzing.");
+      setError("Local analysis completed. AI-assisted analysis could not be reached right now.");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const saveRuntimeApiKey = (value) => {
+    setRuntimeApiKey(value);
+
+    if (value.trim()) {
+      sessionStorage.setItem("scamguard_api_key", value.trim());
+      setAiEnabled(true);
+      return;
     }
 
-    setIsAnalyzing(false);
+    sessionStorage.removeItem("scamguard_api_key");
+    setAiEnabled(Boolean(envApiKey));
+  };
+
+  const copySafeReply = async () => {
+    if (!result?.safeReply) return;
+
+    await navigator.clipboard.writeText(result.safeReply);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
   };
 
   return (
-    <div className="bg-slate-950 min-h-screen text-white">
-      <Navbar toggleKeyInput={() => { }} />
+    <div className="min-h-screen bg-slate-950 text-white">
+      <Navbar
+        toggleKeyInput={() => setShowSettings((value) => !value)}
+        hasApiKey={Boolean(activeApiKey)}
+        aiEnabled={aiEnabled}
+      />
 
-      <div className="max-w-6xl mx-auto p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+      <main className="mx-auto grid max-w-7xl grid-cols-1 gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <div className="space-y-5">
+          {showSettings && (
+            <section className="rounded-lg border border-slate-800 bg-slate-900 p-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end">
+                <div className="flex-1">
+                  <label htmlFor="api-key" className="text-sm font-semibold text-white">
+                    Gemini API key
+                  </label>
+                  <p className="mt-1 text-sm text-slate-400">
+                    Optional. Without it, ScamGuard runs the local signal scan only.
+                  </p>
+                  <input
+                    id="api-key"
+                    value={runtimeApiKey}
+                    onChange={(event) => saveRuntimeApiKey(event.target.value)}
+                    placeholder={
+                      envApiKey ? "Using VITE_API_KEY from .env" : "Paste API key for this session"
+                    }
+                    type="password"
+                    className="mt-3 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
 
-        {/* LEFT SIDE */}
-        <InputBox
-          inputText={inputText}
-          setInputText={setInputText}
-          analyzeText={analyzeText}
-          isAnalyzing={isAnalyzing}
-        />
-
-        {/* RIGHT SIDE */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-          <h2 className="text-lg font-semibold mb-4">Result</h2>
-
-          {error && (
-            <p className="text-red-400 mb-2">{error}</p>
+                <label className="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={aiEnabled}
+                    onChange={(event) => setAiEnabled(event.target.checked)}
+                    className="h-4 w-4 rounded border-slate-600 bg-slate-900"
+                  />
+                  AI-assisted scan
+                </label>
+              </div>
+            </section>
           )}
 
-          <pre className="text-sm text-slate-300 whitespace-pre-wrap">
-            {result || "No analysis yet"}
-          </pre>
+          <InputBox
+            inputText={inputText}
+            setInputText={setInputText}
+            analyzeText={analyzeText}
+            isAnalyzing={isAnalyzing}
+            samples={SAMPLE_MESSAGES}
+            onUseSample={(sample) => {
+              setInputText(sample);
+              setResult(null);
+              setError("");
+            }}
+            onClear={() => {
+              setInputText("");
+              setResult(null);
+              setError("");
+            }}
+          />
         </div>
 
-      </div>
+        <ResultPanel analysis={result} error={error} copied={copied} onCopy={copySafeReply} />
+      </main>
     </div>
   );
 }
