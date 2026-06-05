@@ -194,10 +194,12 @@ export function parseAiAnalysis(rawText) {
 
   try {
     const parsed = JSON.parse(jsonText.slice(start, end + 1));
+    const rawScore = Number(parsed.score);
+    const scoreVal = Number.isFinite(rawScore) ? Math.max(0, Math.min(100, rawScore)) : 0;
     return {
       source: "AI assisted",
-      score: Number.isFinite(parsed.score) ? Math.max(0, Math.min(100, parsed.score)) : 0,
-      riskLevel: parsed.riskLevel || riskLevelFromScore(parsed.score || 0),
+      score: scoreVal,
+      riskLevel: parsed.riskLevel || riskLevelFromScore(scoreVal),
       summary: parsed.summary || "AI analysis completed, but did not include a summary.",
       redFlags: Array.isArray(parsed.redFlags) ? parsed.redFlags : [],
       recommendedActions: Array.isArray(parsed.recommendedActions) ? parsed.recommendedActions : [],

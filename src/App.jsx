@@ -48,6 +48,7 @@ function App() {
     }
 
     setIsAnalyzing(true);
+    setError("");
 
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${activeApiKey}`;
@@ -59,6 +60,18 @@ function App() {
         ],
         generationConfig: {
           responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              score: { type: "INTEGER" },
+              riskLevel: { type: "STRING", enum: ["Minimal", "Low", "Medium", "High"] },
+              summary: { type: "STRING" },
+              redFlags: { type: "ARRAY", items: { type: "STRING" } },
+              recommendedActions: { type: "ARRAY", items: { type: "STRING" } },
+              safeReply: { type: "STRING" }
+            },
+            required: ["score", "riskLevel", "summary", "redFlags", "recommendedActions", "safeReply"]
+          },
           temperature: 0.2,
         },
       };
@@ -72,7 +85,16 @@ function App() {
       });
 
       if (!res.ok) {
-        throw new Error(`Gemini request failed with status ${res.status}`);
+        let errMsg = `Status ${res.status}`;
+        try {
+          const errData = await res.json();
+          if (errData?.error?.message) {
+            errMsg = errData.error.message;
+          }
+        } catch (err) {
+          console.warn("Failed to parse Gemini error response:", err);
+        }
+        throw new Error(errMsg);
       }
 
       const data = await res.json();
@@ -87,7 +109,7 @@ function App() {
       setResult(mergeAnalyses(localAnalysis, aiAnalysis));
     } catch (err) {
       console.error(err);
-      setError("Local analysis completed. AI-assisted analysis could not be reached right now.");
+      setError(`Local analysis completed. AI-assisted scan failed: ${err.message}`);
     } finally {
       setIsAnalyzing(false);
     }
